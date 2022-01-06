@@ -830,7 +830,7 @@ pxla.custom_resource_typing_rules[pjit_p] = _resource_typing_pjit
 
 # -------------------- with_sharding_constraint --------------------
 
-def with_sharding_constraint(x, axis_resources):
+def with_sharding_constraint(x, axis_resources, unspecified_dims=None):
   x_flat, tree = tree_flatten(x)
   parsed_axis_resources, entries, _ = _prepare_axis_resources(axis_resources, "axis_resources")
   axis_resources_flat = tuple(
@@ -842,8 +842,17 @@ def with_sharding_constraint(x, axis_resources):
       "with_sharding_constraint arguments",
       mesh.is_multi_process, mesh.shape,
       x_flat, axis_resources_flat)
-  outs = [sharding_constraint_p.bind(y, axis_resources=r, resource_env=resource_env)
-          for y, r in safe_zip(x_flat, axis_resources_flat)]
+  if unspecified_dims is None:
+    unspecified_dims = tree_map(lambda _: None, x)
+  unspecified_dims_flat = tuple(
+      flatten_axes("with_sharding_constraint unspecified_dims", tree,
+                   unspecified_dims))
+  outs = [
+      sharding_constraint_p.bind(
+          y, axis_resources=r, resource_env=resource_env, unspecified_dims=u)
+      for y, r, u in safe_zip(x_flat, axis_resources_flat,
+                              unspecified_dims_flat)
+  ]
   return tree_unflatten(tree, outs)
 
 def _sharding_constraint_impl(x, axis_resources, resource_env):
@@ -855,38 +864,56 @@ def _sharding_constraint_impl(x, axis_resources, resource_env):
 sharding_constraint_p = core.Primitive("sharding_constraint")
 sharding_constraint_p.def_impl(_sharding_constraint_impl)
 sharding_constraint_p.def_abstract_eval(lambda x, **_: x)
-ad.deflinear2(sharding_constraint_p,
-              lambda ct, _, axis_resources, resource_env: (
-                  sharding_constraint_p.bind(
-                      ct, axis_resources=axis_resources, resource_env=resource_env),))
+ad.deflinear2(
+    sharding_constraint_p,
+    lambda ct, _, axis_resources, resource_env, unspecified_dims:
+    (sharding_constraint_p.bind(
+        ct,
+        axis_resources=axis_resources,
+        resource_env=resource_env,
+        unspecified_dims=unspecified_dims),))
 
 def _sharding_constraint_translation_rule(ctx, avals_in, avals_out, x_node, *,
-                                          axis_resources, resource_env):
+                                          axis_resources, resource_env,
+                                          unspecified_dims):
   aval, = avals_in
   mesh = resource_env.physical_mesh
-  return [xla.set_sharding_proto(
-      ctx.builder, x_node, get_aval_sharding_proto(aval, axis_resources, mesh))]
+  return [
+      xla.set_sharding_proto(
+          ctx.builder,
+          x_node,
+          get_aval_sharding_proto(aval, axis_resources, mesh),
+          unspecified_dims=unspecified_dims)
+  ]
 xla.register_translation(sharding_constraint_p, _sharding_constraint_translation_rule)
 
 def _sharding_constraint_mhlo_lowering(ctx, x_node, *, axis_resources,
-                                       resource_env):
+                                       resource_env, unspecified_dims):
   aval, = ctx.avals_in
   mesh = resource_env.physical_mesh
-  return [mlir.wrap_with_sharding_op(
-      x_node, get_aval_sharding_proto(aval, axis_resources, mesh))]
+  return [
+      mlir.wrap_with_sharding_op(
+          x_node,
+          get_aval_sharding_proto(aval, axis_resources, mesh),
+          unspecified_dims=unspecified_dims)
+  ]
 mlir.register_lowering(sharding_constraint_p,
                        _sharding_constraint_mhlo_lowering)
 
 
-def _sharding_constraint_batcher(insert_axis, axis_size, axis_name, main_type, vals_in, dims_in,
-                                 axis_resources, resource_env):
+def _sharding_constraint_batcher(insert_axis, axis_size, axis_name, main_type,
+                                 vals_in, dims_in, axis_resources, resource_env,
+                                 unspecified_dims):
   x, = vals_in
   d, = dims_in
   new_parts = (axis_name,) if insert_axis else ()
+  if unspecified_dims:
+    unspecified_dims = {i if i < d else d + 1 for i in unspecified_dims}
   y = sharding_constraint_p.bind(
       x,
       axis_resources=axis_resources.insert_axis_partitions(d, new_parts),
-      resource_env=resource_env)
+      resource_env=resource_env,
+      unspecified_dims=unspecified_dims)
   return y, d
 batching.axis_primitive_batchers[sharding_constraint_p] = partial(_sharding_constraint_batcher, False)
 pxla.spmd_primitive_batchers[sharding_constraint_p] = partial(_sharding_constraint_batcher, True)

@@ -243,6 +243,28 @@ class PJitTest(jtu.BufferDonationTestCase):
     # Annotation from pjit
     self.assertIn("sharding={replicated}", hlo.as_hlo_text())
 
+  @jtu.with_mesh([('x', 2), ('y', 2)])
+  def testShardingConstraintPyTreeWithUnspecifiedDims(self):
+    @partial(pjit, in_axis_resources=None, out_axis_resources=None)
+    def f(x):
+      x = with_sharding_constraint(x, [P('x', 'y'), P('y', 'x')], [{0}, {1, 2}])
+      x = x.copy()
+      x[0]['a'] *= 2
+      return x
+
+    shape = (2, 8, 8)
+    v = np.arange(prod(shape)).reshape(shape)
+    x = [{'a': v, 'b': v * 2}, v * 3]
+    actual = f(x)
+
+    expected = x.copy()
+    expected[0]['a'] *= 2
+    self.assertAllClose(actual, expected, check_dtypes=False)
+    self.assertLen(actual[0]['a'].device_buffers, 4)
+
+    # as_hlo_text doesn't print the backend_config (where opaque is stored), so
+    # we cannot test whether "unspecified_dims=[0]" exists in the text.
+
   def testCaching(self):
     def f(x):
       assert should_be_tracing
