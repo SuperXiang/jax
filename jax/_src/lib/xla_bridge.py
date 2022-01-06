@@ -20,6 +20,7 @@ XLA. There are also a handful of related casting utilities.
 """
 
 
+from contextlib import contextmanager
 from functools import partial, lru_cache
 import os
 import threading
@@ -436,3 +437,23 @@ def host_ids(backend=None):
       "instead. jax.host_ids will eventually be removed; please update your "
       "code.")
   return list(range(process_count(backend)))
+
+
+@contextmanager
+def host_transfer_guard(allowed: bool, backend: Optional[Union[str, XlaBackend]] = None):
+  client = get_backend(backend)
+  old_value = client.allow_device_buffer_transfer_to_host()
+  client.set_allow_device_buffer_transfer_to_host(allowed)
+  try:
+    yield None
+  finally:
+    client.set_allow_device_buffer_transfer_to_host(old_value)
+
+
+disallow_host_transfers = partial(host_transfer_guard, False)
+""" Disallows device arrays to be transferred to host memory while in-scope."""
+
+allow_host_transfers = partial(host_transfer_guard, True)
+""" Allows device arrays to be transferred to host memory while in-scope."""
+
+

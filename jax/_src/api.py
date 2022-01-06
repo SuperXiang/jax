@@ -68,7 +68,9 @@ from jax._src.lib import pmap_lib
 from jax._src.lib.xla_bridge import (device_count, local_device_count, devices,
                                      local_devices, process_index,
                                      process_count, host_id, host_ids,
-                                     host_count, default_backend)
+                                     host_count, default_backend,
+                                     allow_host_transfers,
+                                     disallow_host_transfers)
 from jax.core import ShapedArray, raise_to_shaped
 from jax.interpreters import partial_eval as pe
 from jax.interpreters import xla
@@ -2799,6 +2801,8 @@ def device_put_replicated(x: Any, devices: Sequence[xc.Device]):
 def _device_get(x):
   if isinstance(x, core.Tracer):
     return x
+  if device_array.type_is_device_array(x):
+    return x.device_get()
   try:
     copy = x.copy
   except AttributeError:

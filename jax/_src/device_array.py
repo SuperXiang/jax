@@ -201,6 +201,11 @@ for device_array in [DeviceArray]:
     return np.asarray(self)
   setattr(device_array, "copy", copy)
 
+  def device_get(self):
+    return self.device_buffer.to_py(True)
+
+  setattr(device_array, "device_get", device_get)
+
   def __repr__(self):
     line_width = np.get_printoptions()["linewidth"]
     prefix = '{}('.format(self.__class__.__name__.lstrip('_'))
